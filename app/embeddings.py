@@ -11,14 +11,12 @@ sentence-transformers, hosted APIs) plug in behind the same interface.
 
 import hashlib
 import math
-import re
 from collections.abc import Sequence
 from functools import lru_cache
 from typing import Protocol
 
 from app.config import get_settings
-
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+from app.text import tokenize
 
 
 class EmbeddingProvider(Protocol):
@@ -54,7 +52,7 @@ class HashingEmbeddingProvider:
     def _embed_one(self, text: str) -> list[float]:
         vector = [0.0] * self._dimension
 
-        for token in _TOKEN_RE.findall(text.lower()):
+        for token in tokenize(text):
             digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
             bucket = int.from_bytes(digest[:4], "big") % self._dimension
             sign = 1.0 if digest[4] & 1 else -1.0

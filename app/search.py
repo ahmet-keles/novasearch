@@ -69,6 +69,13 @@ def semantic_search(
 ) -> list[SearchHit]:
     """Nearest chunks by cosine distance; score is cosine similarity."""
     [query_embedding] = provider.embed([query])
+
+    # A zero vector has no direction, so cosine distance against it is
+    # undefined. The API rejects tokenless queries before reaching here;
+    # this guard keeps any other caller from ranking on NaN distances.
+    if not any(query_embedding):
+        return []
+
     distance = Chunk.embedding.cosine_distance(query_embedding).label("distance")
 
     rows = session.execute(

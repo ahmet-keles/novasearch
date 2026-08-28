@@ -101,3 +101,14 @@ def test_invalid_mode_and_empty_query_are_rejected(client: TestClient) -> None:
     assert client.get("/search", params={"q": "x", "mode": "regex"}).status_code == 422
     assert client.get("/search", params={"q": ""}).status_code == 422
     assert client.get("/search", params={"q": "x", "limit": 0}).status_code == 422
+
+
+@pytest.mark.parametrize("mode", ["semantic", "keyword", "hybrid"])
+@pytest.mark.parametrize("q", ["!!!", "---", "   "])
+def test_query_without_indexable_tokens_is_rejected_in_every_mode(
+    client: TestClient, mode: str, q: str
+) -> None:
+    response = client.get("/search", params={"q": q, "mode": mode})
+
+    assert response.status_code == 422
+    assert "no indexable tokens" in response.json()["detail"]

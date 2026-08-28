@@ -39,7 +39,13 @@ word-window chunking (fixed window and overlap over normalized whitespace —
 identical input always produces identical chunks), each chunk is embedded,
 and document plus chunks are written in a single transaction. A `tsvector`
 is a stored generated column, so the keyword index can never drift from the
-chunk text.
+chunk text. Only chunks with indexable tokens (lowercase alphanumerics —
+one shared tokenizer defines this for embedding, ingestion, and query
+validation) are stored: a punctuation-only window would embed to a zero
+vector that cosine distance cannot rank, so it is dropped, and a document
+with no indexable tokens at all is rejected with 422. Search queries
+without indexable tokens are likewise rejected with 422 in every mode
+rather than pretending they are searchable.
 
 **Search** (`GET /search`) has three modes:
 

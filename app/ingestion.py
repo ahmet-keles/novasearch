@@ -4,6 +4,7 @@ from app.chunking import chunk_text
 from app.config import get_settings
 from app.embeddings import EmbeddingProvider
 from app.models import Chunk, Document
+from app.text import tokenize
 
 
 def ingest_document(
@@ -20,18 +21,24 @@ def ingest_document(
     committed here, so an embedding or database failure leaves nothing
     half-ingested.
 
-    Raises ValueError when the content yields no chunks (e.g. only
-    punctuation or whitespace).
+    Chunks without indexable tokens (punctuation-only windows) are not
+    stored: they would embed to a zero vector, which cosine distance
+    cannot rank, and full-text search cannot match them either. Raises
+    ValueError when no chunk with indexable tokens remains.
     """
     settings = get_settings()
 
-    chunks = chunk_text(
-        content,
-        max_words=settings.chunk_max_words,
-        overlap_words=settings.chunk_overlap_words,
-    )
+    chunks = [
+        chunk
+        for chunk in chunk_text(
+            content,
+            max_words=settings.chunk_max_words,
+            overlap_words=settings.chunk_overlap_words,
+        )
+        if tokenize(chunk)
+    ]
     if not chunks:
-        raise ValueError("content produced no indexable chunks")
+        raise ValueError("content contains no indexable tokens")
 
     embeddings = provider.embed(chunks)
 

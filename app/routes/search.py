@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.cache import SearchCache, get_search_cache
@@ -6,6 +6,7 @@ from app.db import get_session
 from app.embeddings import EmbeddingProvider, get_embedding_provider
 from app.schemas import SearchResponse, SearchResult
 from app.search import SearchMode, hybrid_search, keyword_search, semantic_search
+from app.text import tokenize
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -19,6 +20,15 @@ def search(
     provider: EmbeddingProvider = Depends(get_embedding_provider),
     cache: SearchCache = Depends(get_search_cache),
 ) -> SearchResponse:
+    # Punctuation/whitespace-only queries embed to a zero vector (cosine
+    # distance undefined) and match no tsquery: nothing can search them,
+    # so say so instead of pretending, in every mode.
+    if not tokenize(q):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="query contains no indexable tokens",
+        )
+
     # The version is captured once and reused for the write below, so a
     # search racing an ingestion can only write to the already-retired
     # namespace — never cache stale results under the new one.

@@ -59,10 +59,42 @@ def test_unknown_document_returns_404(client: TestClient) -> None:
     assert response.status_code == 404
 
 
-def test_content_without_indexable_tokens_is_rejected(client: TestClient) -> None:
-    response = client.post("/documents", json={"title": "Empty", "content": "   \n\t "})
+@pytest.mark.parametrize("content", ["   \n\t ", "!!!", "---", "...,;: —"])
+def test_content_without_indexable_tokens_is_rejected(
+    client: TestClient, content: str
+) -> None:
+    response = client.post("/documents", json={"title": "Empty", "content": content})
 
     assert response.status_code == 422
+
+
+def test_punctuation_only_windows_are_not_stored(client: TestClient) -> None:
+    # Enough punctuation "words" that whole chunk windows contain no
+    # indexable tokens; those windows must be dropped, never stored as
+    # zero-vector chunks.
+    content = "postgres hybrid retrieval overview " + "!! " * 700
+
+    response = client.post("/documents", json={"title": "Noisy", "content": content})
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["chunk_count"] >= 1
+
+    with get_engine().connect() as connection:
+        stored, tokenless = connection.execute(
+            text(
+                """
+                SELECT COUNT(*),
+                       COUNT(*) FILTER (WHERE content !~ '[a-zA-Z0-9]')
+                FROM chunks
+                WHERE document_id = :id
+                """
+            ),
+            {"id": body["id"]},
+        ).one()
+
+    assert stored == body["chunk_count"]
+    assert tokenless == 0, "no stored chunk may lack indexable tokens"
 
 
 def test_missing_fields_are_rejected(client: TestClient) -> None:
