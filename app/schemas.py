@@ -22,3 +22,18 @@ class DocumentRead(BaseModel):
     metadata: dict
     chunk_count: int
     created_at: datetime
+
+
+class SearchResult(BaseModel):
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    document_title: str
+    chunk_index: int
+    content: str
+    score: float
+
+
+class SearchResponse(BaseModel):
+    query: str
+    mode: str
+    results: list[SearchResult]

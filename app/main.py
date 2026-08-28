@@ -8,9 +8,10 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
-    from app.routes import documents
+    from app.routes import documents, search
 
     app.include_router(documents.router)
+    app.include_router(search.router)
 
     return app
 
