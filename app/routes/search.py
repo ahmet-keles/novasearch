@@ -19,7 +19,12 @@ def search(
     provider: EmbeddingProvider = Depends(get_embedding_provider),
     cache: SearchCache = Depends(get_search_cache),
 ) -> SearchResponse:
-    cached = cache.get(mode=mode.value, query=q, limit=limit)
+    # The version is captured once and reused for the write below, so a
+    # search racing an ingestion can only write to the already-retired
+    # namespace — never cache stale results under the new one.
+    version = cache.current_version()
+
+    cached = cache.get(version=version, mode=mode.value, query=q, limit=limit)
     if cached is not None:
         return SearchResponse(**cached)
 
@@ -36,6 +41,12 @@ def search(
         results=[SearchResult(**vars(hit)) for hit in hits],
     )
 
-    cache.put(mode=mode.value, query=q, limit=limit, payload=response.model_dump(mode="json"))
+    cache.put(
+        version=version,
+        mode=mode.value,
+        query=q,
+        limit=limit,
+        payload=response.model_dump(mode="json"),
+    )
 
     return response

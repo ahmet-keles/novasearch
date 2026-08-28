@@ -63,8 +63,11 @@ and plug in behind the same interface without touching the search code.
 
 **Caching**: search responses are cached in Redis under versioned keys with
 a short TTL. Ingestion bumps the namespace version after commit, making all
-stale entries unreachable at once. The cache fails open — if Redis is down,
-search still works and only `/health` reports the outage.
+stale entries unreachable at once. Each search captures the version once
+and uses it for both its cache lookup and its cache write, so a search
+racing an ingestion can only write into the already-retired namespace —
+stale results can never surface under the new one. The cache fails open —
+if Redis is down, search still works and only `/health` reports the outage.
 
 ## What it can and cannot do
 

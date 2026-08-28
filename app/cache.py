@@ -5,6 +5,13 @@ previously cached response becomes unreachable at once — no per-key
 invalidation, no stale results after a write. Entries also carry a short
 TTL, which bounds memory since orphaned versions simply expire.
 
+A request captures the version ONCE (:meth:`SearchCache.current_version`)
+and uses it for both its lookup and its write. This closes the
+miss-then-write race: if an ingestion bumps the namespace while a search
+is running, the search's late write lands under the version it captured —
+the old, already-retired namespace — and can never be served to a search
+that starts after the invalidation.
+
 The cache fails open: if Redis is down, search still works (uncached) and
 only /health reports the outage.
 """
@@ -28,19 +35,42 @@ class SearchCache:
         self._client = client
         self._ttl_seconds = ttl_seconds
 
-    def get(self, *, mode: str, query: str, limit: int) -> dict | None:
+    def current_version(self) -> str | None:
+        """The namespace version for one request's get/put pair.
+
+        Capture this once per request and pass the same value to both
+        :meth:`get` and :meth:`put`. Returns None when Redis is
+        unavailable, which makes both operations no-ops (fail open).
+        """
         try:
-            raw = self._client.get(self._key(mode=mode, query=query, limit=limit))
+            return self._client.get(_VERSION_KEY) or "0"
+        except redis.RedisError:
+            logger.warning("Redis unavailable; serving search uncached", exc_info=True)
+            return None
+
+    def get(
+        self, *, version: str | None, mode: str, query: str, limit: int
+    ) -> dict | None:
+        if version is None:
+            return None
+
+        try:
+            raw = self._client.get(self._key(version=version, mode=mode, query=query, limit=limit))
         except redis.RedisError:
             logger.warning("Redis unavailable; serving search uncached", exc_info=True)
             return None
 
         return json.loads(raw) if raw is not None else None
 
-    def put(self, *, mode: str, query: str, limit: int, payload: dict) -> None:
+    def put(
+        self, *, version: str | None, mode: str, query: str, limit: int, payload: dict
+    ) -> None:
+        if version is None:
+            return
+
         try:
             self._client.set(
-                self._key(mode=mode, query=query, limit=limit),
+                self._key(version=version, mode=mode, query=query, limit=limit),
                 json.dumps(payload),
                 ex=self._ttl_seconds,
             )
@@ -60,8 +90,7 @@ class SearchCache:
         except redis.RedisError:
             return False
 
-    def _key(self, *, mode: str, query: str, limit: int) -> str:
-        version = self._client.get(_VERSION_KEY) or "0"
+    def _key(self, *, version: str, mode: str, query: str, limit: int) -> str:
         return f"{_ENTRY_PREFIX}:{version}:{mode}:{limit}:{query}"
 
 
