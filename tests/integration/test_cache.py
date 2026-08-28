@@ -2,6 +2,11 @@ import pytest
 import redis
 from fastapi.testclient import TestClient
 
+from app.cache import bump_epoch, current_epoch, get_search_cache
+from app.db import get_sessionmaker
+from app.embeddings import get_embedding_provider
+from app.ingestion import ingest_document
+
 pytestmark = pytest.mark.integration
 
 
@@ -18,6 +23,22 @@ BETTER_DOC = {
     ),
 }
 
+QUERY = {"q": "kafka partition rebalancing"}
+
+
+class _DownRedis:
+    """Stands in for SearchCache's client while Redis is 'down'."""
+
+    def __getattr__(self, name: str):
+        def _raise(*args, **kwargs):
+            raise redis.ConnectionError("redis is down (simulated)")
+
+        return _raise
+
+
+def titles(response) -> list[str]:
+    return [r["document_title"] for r in response.json()["results"]]
+
 
 def test_search_responses_are_cached_in_redis(
     client: TestClient, redis_client: redis.Redis
@@ -33,35 +54,37 @@ def test_search_responses_are_cached_in_redis(
     )
 
 
-def test_late_cache_write_after_invalidation_lands_in_retired_namespace(
-    client: TestClient, redis_client: redis.Redis
+def test_late_cache_write_after_epoch_bump_lands_in_retired_epoch(
+    client: TestClient,
 ) -> None:
-    """The miss-then-write race, driven directly against SearchCache.
+    """The miss-then-write race, driven directly against the cache layer.
 
-    A search captures version N and misses; an ingestion invalidates
-    (N -> N+1) while the search is still computing; the search's late
+    A search captures epoch N and misses; an ingestion commits an epoch
+    bump (N -> N+1) while the search is still computing; the search's late
     write must land under N and be unreachable under N+1.
     """
-    from app.cache import get_search_cache
-
     cache = get_search_cache()
 
-    version = cache.current_version()
-    assert cache.get(version=version, mode="hybrid", query="q", limit=10) is None
+    with get_sessionmaker()() as session:
+        epoch = current_epoch(session)
 
-    cache.invalidate_all()  # concurrent ingestion commits and invalidates
+    assert cache.get(epoch=epoch, mode="hybrid", query="q", limit=10) is None
 
-    cache.put(
-        version=version, mode="hybrid", query="q", limit=10, payload={"stale": True}
+    with get_sessionmaker()() as session:  # concurrent ingestion commits
+        bump_epoch(session)
+        session.commit()
+
+    cache.put(epoch=epoch, mode="hybrid", query="q", limit=10, payload={"stale": True})
+
+    with get_sessionmaker()() as session:
+        fresh_epoch = current_epoch(session)
+
+    assert fresh_epoch != epoch
+    assert cache.get(epoch=fresh_epoch, mode="hybrid", query="q", limit=10) is None, (
+        "a write under the retired epoch must be invisible to new searches"
     )
-
-    fresh_version = cache.current_version()
-    assert fresh_version != version
-    assert cache.get(version=fresh_version, mode="hybrid", query="q", limit=10) is None, (
-        "a write under the retired namespace must be invisible to new searches"
-    )
-    # The stale entry exists, but only under the retired namespace.
-    assert cache.get(version=version, mode="hybrid", query="q", limit=10) == {"stale": True}
+    # The stale entry exists, but only under the retired epoch.
+    assert cache.get(epoch=epoch, mode="hybrid", query="q", limit=10) == {"stale": True}
 
 
 def test_search_racing_an_ingest_cannot_cache_stale_results(
@@ -70,15 +93,11 @@ def test_search_racing_an_ingest_cannot_cache_stale_results(
     """End-to-end race: ingestion lands between cache miss and cache write.
 
     The retriever is wrapped so that, after it computes its (about to be
-    stale) results, a concurrent ingestion commits and invalidates the
-    cache — exactly the window in which the response is then written. The
-    next search must see the new document, not the raced cache entry.
+    stale) results, a concurrent ingestion commits — bumping the epoch in
+    its own transaction — exactly in the window before the response is
+    written to the cache. The next search must see the new document.
     """
     import app.routes.search as search_route
-    from app.cache import get_search_cache
-    from app.db import get_sessionmaker
-    from app.embeddings import get_embedding_provider
-    from app.ingestion import ingest_document
 
     client.post("/documents", json=DOC)
 
@@ -96,39 +115,80 @@ def test_search_racing_an_ingest_cannot_cache_stale_results(
                 metadata={},
             )
             ingest_session.commit()
-        get_search_cache().invalidate_all()
 
         return hits
 
     monkeypatch.setattr(search_route, "hybrid_search", hybrid_with_concurrent_ingest)
 
-    raced = client.get("/search", params={"q": "kafka partition rebalancing"})
-    raced_titles = [r["document_title"] for r in raced.json()["results"]]
-    assert "Kafka partition rebalancing" not in raced_titles, (
+    raced = client.get("/search", params=QUERY)
+    assert "Kafka partition rebalancing" not in titles(raced), (
         "the raced request itself predates the ingest and serves old results"
     )
 
     monkeypatch.setattr(search_route, "hybrid_search", real_hybrid)
 
-    after = client.get("/search", params={"q": "kafka partition rebalancing"})
-    titles = [r["document_title"] for r in after.json()["results"]]
+    after = client.get("/search", params=QUERY)
 
-    assert titles[0] == "Kafka partition rebalancing", (
-        "the raced response must not have been cached under the new namespace"
+    assert titles(after)[0] == "Kafka partition rebalancing", (
+        "the raced response must not have been cached under the new epoch"
+    )
+
+
+def test_redis_outage_during_ingestion_cannot_resurrect_stale_entries(
+    client: TestClient, redis_client: redis.Redis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invalidation survives a Redis outage because PostgreSQL owns it.
+
+    Scenario: a response is cached at epoch N; Redis goes down; an
+    ingestion still commits (bumping the epoch in PostgreSQL); Redis comes
+    back before the old entry's TTL expires. The epoch-N entry is still
+    physically in Redis — and must never be served again.
+    """
+    cache = get_search_cache()
+
+    client.post("/documents", json=DOC)
+    before = client.get("/search", params=QUERY)
+    assert titles(before) == ["Kafka partitioning"]
+
+    stale_keys = redis_client.keys("novasearch:search:entry:*")
+    assert stale_keys, "the pre-outage response must be cached"
+
+    real_client = cache._client
+    monkeypatch.setattr(cache, "_client", _DownRedis())  # Redis goes down
+
+    assert client.get("/health").status_code == 503
+
+    created = client.post("/documents", json=BETTER_DOC)
+    assert created.status_code == 201, "ingestion must succeed while Redis is down"
+
+    during = client.get("/search", params=QUERY)
+    assert titles(during)[0] == "Kafka partition rebalancing", (
+        "search during the outage is uncached but must be correct"
+    )
+
+    monkeypatch.setattr(cache, "_client", real_client)  # Redis comes back
+
+    assert all(redis_client.exists(key) for key in stale_keys), (
+        "the stale epoch-N entry is still physically present in Redis"
+    )
+
+    after = client.get("/search", params=QUERY)
+    assert titles(after)[0] == "Kafka partition rebalancing", (
+        "the recovered Redis must not serve the stale epoch-N entry: the "
+        "PostgreSQL epoch moved on with the ingestion"
     )
 
 
 def test_ingestion_invalidates_cached_search_responses(client: TestClient) -> None:
     client.post("/documents", json=DOC)
 
-    before = client.get("/search", params={"q": "kafka partition rebalancing"})
-    assert [r["document_title"] for r in before.json()["results"]] == ["Kafka partitioning"]
+    before = client.get("/search", params=QUERY)
+    assert titles(before) == ["Kafka partitioning"]
 
     client.post("/documents", json=BETTER_DOC)
 
-    after = client.get("/search", params={"q": "kafka partition rebalancing"})
-    titles = [r["document_title"] for r in after.json()["results"]]
+    after = client.get("/search", params=QUERY)
 
-    assert titles[0] == "Kafka partition rebalancing", (
+    assert titles(after)[0] == "Kafka partition rebalancing", (
         "a search after ingestion must see the new document, not a stale cache entry"
     )

@@ -67,13 +67,18 @@ score as similar when they share vocabulary. Model-backed providers (local
 sentence-transformers, hosted embedding APIs) are the designed next step
 and plug in behind the same interface without touching the search code.
 
-**Caching**: search responses are cached in Redis under versioned keys with
-a short TTL. Ingestion bumps the namespace version after commit, making all
-stale entries unreachable at once. Each search captures the version once
-and uses it for both its cache lookup and its cache write, so a search
-racing an ingestion can only write into the already-retired namespace —
-stale results can never surface under the new one. The cache fails open —
-if Redis is down, search still works and only `/health` reports the outage.
+**Caching**: search responses are cached in Redis with a short TTL, under
+keys that embed an **invalidation epoch owned by PostgreSQL** (the
+single-row `cache_epoch` table). Ingestion increments the epoch *in the
+same transaction* as the document write, so invalidation commits
+atomically with the data and can never be lost. Each search reads the
+epoch once and uses it for both its cache lookup and its cache write, so a
+search racing an ingestion can only write under the already-retired epoch —
+stale results can never surface under the new one. Redis is purely a
+disposable cache, never the source of truth: if it is down, ingestion and
+(uncached) search keep working and only `/health` reports the outage — and
+because the epoch lives in PostgreSQL, entries left in Redis from before
+an outage stay unreachable after it recovers, expiring via their TTL.
 
 ## What it can and cannot do
 

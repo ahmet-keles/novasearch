@@ -3,6 +3,8 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
     Computed,
     ForeignKey,
     Integer,
@@ -18,6 +20,24 @@ from app.config import get_settings
 
 class Base(DeclarativeBase):
     pass
+
+
+class CacheEpoch(Base):
+    """Single-row table owning the search-cache invalidation epoch.
+
+    Ingestion increments the epoch in the same transaction as the document
+    write, and search cache keys embed it. PostgreSQL — not Redis — is the
+    source of truth for invalidation, so a Redis outage can never lose an
+    epoch bump and recovered Redis entries under old epochs stay
+    unreachable. The CHECK pins the table to one row; the UPDATE briefly
+    serializes concurrent ingestions on its row lock.
+    """
+
+    __tablename__ = "cache_epoch"
+    __table_args__ = (CheckConstraint("id = 1", name="cache_epoch_single_row"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
 class Document(Base):

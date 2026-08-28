@@ -3,7 +3,6 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.cache import SearchCache, get_search_cache
 from app.db import get_session
 from app.embeddings import EmbeddingProvider, get_embedding_provider
 from app.ingestion import ingest_document
@@ -18,7 +17,6 @@ def create_document(
     payload: DocumentCreate,
     session: Session = Depends(get_session),
     provider: EmbeddingProvider = Depends(get_embedding_provider),
-    cache: SearchCache = Depends(get_search_cache),
 ) -> DocumentCreated:
     try:
         document = ingest_document(
@@ -33,10 +31,9 @@ def create_document(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
         ) from error
 
+    # Committing also commits the cache-epoch bump ingest_document made in
+    # the same transaction; a rollback rolls both back together.
     session.commit()
-
-    # After the commit, so a rolled-back ingest never invalidates anything.
-    cache.invalidate_all()
 
     return DocumentCreated(id=document.id, chunk_count=len(document.chunks))
 

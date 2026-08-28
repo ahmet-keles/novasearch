@@ -1,19 +1,19 @@
-"""Versioned Redis cache for search responses.
+"""Search-response cache: PostgreSQL owns the epoch, Redis holds payloads.
 
-Keys embed a namespace version; ingestion bumps the version, so every
-previously cached response becomes unreachable at once — no per-key
-invalidation, no stale results after a write. Entries also carry a short
-TTL, which bounds memory since orphaned versions simply expire.
+Cache keys embed an invalidation epoch that lives in PostgreSQL (the
+single-row ``cache_epoch`` table) and is incremented in the same
+transaction as every successful ingestion. A search captures the epoch
+ONCE and uses it for both its lookup and its write, so a write that races
+an ingestion lands under the epoch the request started with — already
+retired by the ingestion's commit — and can never be served again.
 
-A request captures the version ONCE (:meth:`SearchCache.current_version`)
-and uses it for both its lookup and its write. This closes the
-miss-then-write race: if an ingestion bumps the namespace while a search
-is running, the search's late write lands under the version it captured —
-the old, already-retired namespace — and can never be served to a search
-that starts after the invalidation.
-
-The cache fails open: if Redis is down, search still works (uncached) and
-only /health reports the outage.
+Because the epoch never lives in Redis, a Redis outage cannot lose an
+invalidation: ingestion during the outage still commits its epoch bump
+with the data, and when Redis comes back, every entry written before the
+outage sits under a retired epoch — physically present until its TTL
+expires, but unreachable. Redis is purely a disposable cache: its
+failures on read or write fail open (search runs uncached), and only
+/health reports the outage.
 """
 
 import json
@@ -21,13 +21,34 @@ import logging
 from functools import lru_cache
 
 import redis
+from sqlalchemy import select, update
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.models import CacheEpoch
 
 logger = logging.getLogger(__name__)
 
-_VERSION_KEY = "novasearch:search:version"
 _ENTRY_PREFIX = "novasearch:search:entry"
+
+
+def current_epoch(session: Session) -> int:
+    """The invalidation epoch for one request's cache get/put pair.
+
+    Capture this once per search and pass the same value to both
+    :meth:`SearchCache.get` and :meth:`SearchCache.put`.
+    """
+    return session.execute(select(CacheEpoch.epoch)).scalar_one()
+
+
+def bump_epoch(session: Session) -> None:
+    """Retire every cached search response, atomically with the caller.
+
+    Runs in the caller's transaction: the bump commits if and only if the
+    ingestion commits, so there is no window where new data is visible
+    under an epoch that still serves pre-ingestion cache entries.
+    """
+    session.execute(update(CacheEpoch).values(epoch=CacheEpoch.epoch + 1))
 
 
 class SearchCache:
@@ -35,54 +56,24 @@ class SearchCache:
         self._client = client
         self._ttl_seconds = ttl_seconds
 
-    def current_version(self) -> str | None:
-        """The namespace version for one request's get/put pair.
-
-        Capture this once per request and pass the same value to both
-        :meth:`get` and :meth:`put`. Returns None when Redis is
-        unavailable, which makes both operations no-ops (fail open).
-        """
+    def get(self, *, epoch: int, mode: str, query: str, limit: int) -> dict | None:
         try:
-            return self._client.get(_VERSION_KEY) or "0"
-        except redis.RedisError:
-            logger.warning("Redis unavailable; serving search uncached", exc_info=True)
-            return None
-
-    def get(
-        self, *, version: str | None, mode: str, query: str, limit: int
-    ) -> dict | None:
-        if version is None:
-            return None
-
-        try:
-            raw = self._client.get(self._key(version=version, mode=mode, query=query, limit=limit))
+            raw = self._client.get(self._key(epoch=epoch, mode=mode, query=query, limit=limit))
         except redis.RedisError:
             logger.warning("Redis unavailable; serving search uncached", exc_info=True)
             return None
 
         return json.loads(raw) if raw is not None else None
 
-    def put(
-        self, *, version: str | None, mode: str, query: str, limit: int, payload: dict
-    ) -> None:
-        if version is None:
-            return
-
+    def put(self, *, epoch: int, mode: str, query: str, limit: int, payload: dict) -> None:
         try:
             self._client.set(
-                self._key(version=version, mode=mode, query=query, limit=limit),
+                self._key(epoch=epoch, mode=mode, query=query, limit=limit),
                 json.dumps(payload),
                 ex=self._ttl_seconds,
             )
         except redis.RedisError:
             logger.warning("Redis unavailable; search response not cached", exc_info=True)
-
-    def invalidate_all(self) -> None:
-        """Make every cached search response unreachable (namespace bump)."""
-        try:
-            self._client.incr(_VERSION_KEY)
-        except redis.RedisError:
-            logger.warning("Redis unavailable; cache not invalidated", exc_info=True)
 
     def ping(self) -> bool:
         try:
@@ -90,8 +81,8 @@ class SearchCache:
         except redis.RedisError:
             return False
 
-    def _key(self, *, version: str, mode: str, query: str, limit: int) -> str:
-        return f"{_ENTRY_PREFIX}:{version}:{mode}:{limit}:{query}"
+    def _key(self, *, epoch: int, mode: str, query: str, limit: int) -> str:
+        return f"{_ENTRY_PREFIX}:{epoch}:{mode}:{limit}:{query}"
 
 
 @lru_cache

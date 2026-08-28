@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.cache import SearchCache, get_search_cache
+from app.cache import SearchCache, current_epoch, get_search_cache
 from app.db import get_session
 from app.embeddings import EmbeddingProvider, get_embedding_provider
 from app.schemas import SearchResponse, SearchResult
@@ -29,12 +29,12 @@ def search(
             detail="query contains no indexable tokens",
         )
 
-    # The version is captured once and reused for the write below, so a
-    # search racing an ingestion can only write to the already-retired
-    # namespace — never cache stale results under the new one.
-    version = cache.current_version()
+    # The epoch is read from PostgreSQL once and reused for the write
+    # below, so a search racing an ingestion can only write under the
+    # already-retired epoch — never cache stale results under the new one.
+    epoch = current_epoch(session)
 
-    cached = cache.get(version=version, mode=mode.value, query=q, limit=limit)
+    cached = cache.get(epoch=epoch, mode=mode.value, query=q, limit=limit)
     if cached is not None:
         return SearchResponse(**cached)
 
@@ -52,7 +52,7 @@ def search(
     )
 
     cache.put(
-        version=version,
+        epoch=epoch,
         mode=mode.value,
         query=q,
         limit=limit,

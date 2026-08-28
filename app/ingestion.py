@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 
+from app.cache import bump_epoch
 from app.chunking import chunk_text
 from app.config import get_settings
 from app.embeddings import EmbeddingProvider
@@ -50,5 +51,10 @@ def ingest_document(
 
     session.add(document)
     session.flush()
+
+    # Same transaction as the document write: the cache epoch bump commits
+    # iff the ingest commits, so invalidation can never be lost — not even
+    # while Redis is down (the epoch lives in PostgreSQL).
+    bump_epoch(session)
 
     return document
