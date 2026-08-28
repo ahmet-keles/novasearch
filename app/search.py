@@ -9,7 +9,7 @@ need to be calibrated against each other.
 
 from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import TypeVar
 from uuid import UUID
 
@@ -21,7 +21,7 @@ from app.embeddings import EmbeddingProvider
 from app.models import Chunk, Document
 
 
-class SearchMode(str, Enum):
+class SearchMode(StrEnum):
     semantic = "semantic"
     keyword = "keyword"
     hybrid = "hybrid"
@@ -54,7 +54,7 @@ def reciprocal_rank_fusion(
 
     scores: dict[K, float] = {}
 
-    for ranking, weight in zip(rankings, weights):
+    for ranking, weight in zip(rankings, weights, strict=True):
         for rank, item in enumerate(ranking, start=1):
             scores[item] = scores.get(item, 0.0) + weight / (k + rank)
 

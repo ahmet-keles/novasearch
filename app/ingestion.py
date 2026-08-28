@@ -38,7 +38,7 @@ def ingest_document(
     document = Document(title=title, content=content, doc_metadata=metadata)
     document.chunks = [
         Chunk(chunk_index=index, content=chunk, embedding=embedding)
-        for index, (chunk, embedding) in enumerate(zip(chunks, embeddings))
+        for index, (chunk, embedding) in enumerate(zip(chunks, embeddings, strict=True))
     ]
 
     session.add(document)

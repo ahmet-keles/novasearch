@@ -1,3 +1,5 @@
+from itertools import pairwise
+
 import pytest
 
 from app.chunking import chunk_text
@@ -25,7 +27,7 @@ def test_chunks_never_exceed_max_words() -> None:
 def test_consecutive_chunks_share_the_overlap() -> None:
     chunks = chunk_text(words(250), max_words=100, overlap_words=20)
 
-    for previous, current in zip(chunks, chunks[1:]):
+    for previous, current in pairwise(chunks):
         assert previous.split()[-20:] == current.split()[:20]
 
 
