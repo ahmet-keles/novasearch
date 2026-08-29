@@ -61,3 +61,66 @@ jobs:
 
       - name: Run unit and integration tests
         run: pytest -q
+
+  model:
+    # The whole suite again with the real sentence-transformer provider
+    # (NOVA_EMBEDDING_PROVIDER=model), plus the model-marked quality tests,
+    # which are required here rather than skippable. Separate job on
+    # purpose: the fast job stays dependency-light, and a red here points
+    # at the model path specifically.
+    name: model embeddings
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: novasearch
+          POSTGRES_USER: nova
+          POSTGRES_PASSWORD: nova
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U nova -d novasearch"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NOVA_DATABASE_URL: postgresql+psycopg://nova:nova@localhost:5432/novasearch
+      NOVA_REDIS_URL: redis://localhost:6379/0
+      NOVA_EMBEDDING_PROVIDER: model
+      NOVA_EMBEDDING_CACHE_DIR: /home/runner/.cache/novasearch-models
+      NOVA_MODEL_TESTS_REQUIRED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/novasearch-models
+          key: embedding-model-${{ hashFiles('pyproject.toml') }}-all-MiniLM-L6-v2
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,model]"
+
+      - name: Run the full suite on the model provider
+        run: pytest -q
