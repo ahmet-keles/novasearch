@@ -30,7 +30,7 @@ in sync.
               │ documents   │   └───────────┘
               │ chunks      │
               │  ├ tsvector ── GIN index (keyword)
-              │  └ vector(256) ── HNSW index (semantic)
+              │  └ vector(384) ── HNSW index (semantic)
               └─────────────┘
 ```
 
@@ -59,13 +59,42 @@ rather than pretending they are searchable.
   ranks, not raw scores, so cosine similarity and `ts_rank` never need to
   be calibrated against each other.
 
-**Embeddings** are behind a small `EmbeddingProvider` interface. The
-shipped implementation is a deterministic **feature-hashing bag-of-words
-baseline** (BLAKE2b bucket + sign per token, L2-normalized): no model
-download, no network, hermetic tests. It is *not* a semantic model — texts
-score as similar when they share vocabulary. Model-backed providers (local
-sentence-transformers, hosted embedding APIs) are the designed next step
-and plug in behind the same interface without touching the search code.
+**Embeddings** are behind a small `EmbeddingProvider` interface with two
+implementations, selected by `NOVA_EMBEDDING_PROVIDER`:
+
+- `hashing` (default) — a deterministic **feature-hashing bag-of-words
+  baseline** (BLAKE2b bucket + sign per token, L2-normalized): no model
+  download, no network, hermetic tests. It is *not* a semantic model —
+  texts score as similar when they share vocabulary.
+- `model` — a real **sentence-transformer model**
+  (`sentence-transformers/all-MiniLM-L6-v2`, 384-dim by default) served on
+  CPU via ONNX (`fastembed`), installed with the optional `[model]` extra
+  and downloaded once on first use. This is what makes paraphrases match
+  without shared vocabulary; the evaluation fixtures in
+  `tests/fixtures/semantic_eval.json` measure exactly that, and also pin
+  that the hashing baseline *cannot* solve them.
+
+Both embed in batches and both must match the pgvector schema: the
+application validates the provider's measured output dimension against the
+live `chunks.embedding` column at startup and refuses to start on a
+mismatch. Embeddings are provider-specific — one deployment has one
+embedding space, and switching it requires a migration plus re-ingestion
+(migration `0003`, which moved the schema to 384 dimensions, is exactly
+that).
+
+Dimensions alone don't make vectors comparable: both providers produce
+384-dim vectors, yet a hashing vector and a MiniLM vector belong to
+unrelated spaces, so a bare provider switch against a populated index
+would silently return invalid rankings. PostgreSQL therefore also stores
+the **identity of the active embedding space** (provider type, model
+name, dimension — the single-row `embedding_space` table). An empty index
+starts unclaimed and adopts the configured provider on its first ingest;
+the claim is verified under a row lock in the same transaction as every
+chunk write, so two spaces can never mix — not even across replicas — and
+startup refuses to boot when the stored space differs from the configured
+provider's. Changing the space of a populated index takes a migration
+that clears the chunks and resets the claim (re-ingestion follows); there
+is deliberately no online re-indexing yet.
 
 **Caching**: search responses are cached in Redis with a short TTL, under
 keys that embed an **invalidation epoch owned by PostgreSQL** (the
@@ -83,13 +112,18 @@ an outage stay unreachable after it recovers, expiring via their TTL.
 ## What it can and cannot do
 
 Implemented and tested: document ingestion, deterministic chunking,
-embedding storage in pgvector, keyword / semantic / hybrid search, Redis
-response caching with write invalidation, health checks, Alembic
-migrations, CI.
+embedding storage in pgvector, model-backed semantic embeddings
+(all-MiniLM-L6-v2 via ONNX) with configurable provider selection, startup
+dimension validation, and a persisted embedding-space identity guard
+(mixing embeddings from two providers is structurally impossible),
+keyword / semantic / hybrid search,
+paraphrase-retrieval evaluation fixtures, Redis response caching with
+write invalidation, health checks, Alembic migrations, CI (one job on the
+hashing baseline, one running the full suite on the model provider).
 
 Not implemented (see roadmap — the API will not pretend otherwise): answer
-generation / RAG, model-backed embeddings, reranking, authentication,
-document updates and deletion, pagination.
+generation / RAG, reranking, embedding versioning / online re-indexing,
+authentication, document updates and deletion, pagination.
 
 ## Local setup
 
@@ -99,10 +133,18 @@ Requirements: Python 3.11+, Docker.
 docker compose up -d --wait          # PostgreSQL (pgvector) on :5442, Redis on :6389
 
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev]"              # add ",model" for the sentence-transformer provider
 
 alembic upgrade head                 # create the schema
 uvicorn app.main:app --reload        # serve on :8000
+```
+
+To search with real semantic embeddings, install the extra and select the
+provider (the model, ~90 MB, downloads once on first use):
+
+```bash
+pip install -e ".[dev,model]"
+NOVA_EMBEDDING_PROVIDER=model uvicorn app.main:app --reload
 ```
 
 Configuration comes from `NOVA_`-prefixed environment variables (or a
@@ -146,6 +188,12 @@ pytest                        # full suite; integration tests need `docker compo
 ruff check .
 ```
 
+Tests marked `model` exercise the sentence-transformer provider and its
+retrieval quality; they skip unless the `[model]` extra is installed and
+the model is available (CI's *model embeddings* job makes them mandatory
+and additionally runs the entire integration suite with
+`NOVA_EMBEDDING_PROVIDER=model`).
+
 Integration tests run against real PostgreSQL and Redis: they apply the
 Alembic migrations, ingest documents over the HTTP API, and assert
 persisted rows, generated tsvectors, embedding dimensions, ranking
@@ -155,11 +203,11 @@ push and pull request.
 
 ## Roadmap
 
-1. **Model-backed embeddings** — a real semantic `EmbeddingProvider`
-   (local sentence-transformers and/or a hosted API), with embedding
-   versioning and re-indexing.
-2. **Retrieval quality** — configurable fusion weights, a small relevance
-   evaluation harness, optional cross-encoder reranking.
+1. **Embedding lifecycle** — embedding versioning and online re-indexing,
+   so the embedding space can change without a destructive migration;
+   hosted embedding APIs as further providers.
+2. **Retrieval quality** — configurable fusion weights, a broader relevance
+   evaluation corpus, optional cross-encoder reranking.
 3. **Document lifecycle** — update and delete with index and cache
    consistency, batch ingestion, pagination.
 4. **RAG layer** — grounded answer generation over retrieved chunks
