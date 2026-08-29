@@ -62,6 +62,15 @@ def evaluate(provider: EmbeddingProvider) -> tuple[float, float]:
     """Ingest the fixture corpus with `provider`; return (top1, recall@3)."""
     with get_sessionmaker()() as session:
         session.execute(text("TRUNCATE documents CASCADE"))
+        # Unclaim the embedding space (cleared-index invariant), so each
+        # evaluation run adopts its own provider — the hashing-contrast
+        # test must work even when the suite runs under the model config.
+        session.execute(
+            text(
+                "UPDATE embedding_space"
+                " SET provider = NULL, model_name = NULL, dimension = NULL"
+            )
+        )
         for document in FIXTURES["corpus"]:
             ingest_document(
                 session,

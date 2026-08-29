@@ -4,15 +4,20 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.db import get_sessionmaker, validate_embedding_dimension
+from app.embedding_space import validate_embedding_space
 from app.embeddings import get_embedding_provider
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Fail fast on a provider/schema dimension mismatch instead of letting
-    # the first ingest die with an opaque pgvector error.
+    # Fail fast instead of letting the first query misbehave: the provider
+    # must match the pgvector column dimension, and — dimensions being
+    # equal is not enough — the embedding space of whatever the index
+    # already holds. An unclaimed (empty) index accepts any provider.
     with get_sessionmaker()() as session:
-        validate_embedding_dimension(session, get_embedding_provider())
+        provider = get_embedding_provider()
+        validate_embedding_dimension(session, provider)
+        validate_embedding_space(session, provider.space)
 
     yield
 

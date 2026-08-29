@@ -16,6 +16,7 @@ provider is chosen in one place (:func:`get_embedding_provider`, driven by
 import hashlib
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Protocol
 
@@ -23,9 +24,36 @@ from app.config import get_settings
 from app.text import tokenize
 
 
+@dataclass(frozen=True)
+class EmbeddingSpace:
+    """Identity of the space a provider's vectors live in.
+
+    Two vectors are comparable only when they come from the same space:
+    same provider type, same model (where one exists), same dimension.
+    Equal dimensions are NOT enough — a 384-dim hashing vector and a
+    384-dim MiniLM vector are mathematically compatible but semantically
+    unrelated, which is exactly the mix-up the persisted space identity
+    (see app.embedding_space) exists to prevent.
+    """
+
+    provider: str
+    model_name: str | None
+    dimension: int
+
+    def describe(self) -> str:
+        if self.model_name is None:
+            return f"{self.provider} ({self.dimension}-dim)"
+        return f"{self.provider} {self.model_name} ({self.dimension}-dim)"
+
+
 class EmbeddingProvider(Protocol):
     @property
     def dimension(self) -> int: ...
+
+    @property
+    def space(self) -> EmbeddingSpace:
+        """The embedding space this provider's vectors belong to."""
+        ...
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         """Return one L2-normalized vector per input text, in order."""
@@ -49,6 +77,10 @@ class HashingEmbeddingProvider:
     @property
     def dimension(self) -> int:
         return self._dimension
+
+    @property
+    def space(self) -> EmbeddingSpace:
+        return EmbeddingSpace(provider="hashing", model_name=None, dimension=self._dimension)
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         return [self._embed_one(text) for text in texts]
@@ -102,6 +134,7 @@ class SentenceTransformerEmbeddingProvider:
             ) from error
 
         self._batch_size = batch_size
+        self._model_name = model_name
         self._model = TextEmbedding(model_name=model_name, cache_dir=cache_dir)
 
         # The model's true output dimension, measured rather than assumed,
@@ -112,6 +145,12 @@ class SentenceTransformerEmbeddingProvider:
     @property
     def dimension(self) -> int:
         return self._dimension
+
+    @property
+    def space(self) -> EmbeddingSpace:
+        return EmbeddingSpace(
+            provider="model", model_name=self._model_name, dimension=self._dimension
+        )
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:

@@ -82,6 +82,20 @@ embedding space, and switching it requires a migration plus re-ingestion
 (migration `0003`, which moved the schema to 384 dimensions, is exactly
 that).
 
+Dimensions alone don't make vectors comparable: both providers produce
+384-dim vectors, yet a hashing vector and a MiniLM vector belong to
+unrelated spaces, so a bare provider switch against a populated index
+would silently return invalid rankings. PostgreSQL therefore also stores
+the **identity of the active embedding space** (provider type, model
+name, dimension — the single-row `embedding_space` table). An empty index
+starts unclaimed and adopts the configured provider on its first ingest;
+the claim is verified under a row lock in the same transaction as every
+chunk write, so two spaces can never mix — not even across replicas — and
+startup refuses to boot when the stored space differs from the configured
+provider's. Changing the space of a populated index takes a migration
+that clears the chunks and resets the claim (re-ingestion follows); there
+is deliberately no online re-indexing yet.
+
 **Caching**: search responses are cached in Redis with a short TTL, under
 keys that embed an **invalidation epoch owned by PostgreSQL** (the
 single-row `cache_epoch` table). Ingestion increments the epoch *in the
@@ -99,8 +113,10 @@ an outage stay unreachable after it recovers, expiring via their TTL.
 
 Implemented and tested: document ingestion, deterministic chunking,
 embedding storage in pgvector, model-backed semantic embeddings
-(all-MiniLM-L6-v2 via ONNX) with configurable provider selection and
-startup dimension validation, keyword / semantic / hybrid search,
+(all-MiniLM-L6-v2 via ONNX) with configurable provider selection, startup
+dimension validation, and a persisted embedding-space identity guard
+(mixing embeddings from two providers is structurally impossible),
+keyword / semantic / hybrid search,
 paraphrase-retrieval evaluation fixtures, Redis response caching with
 write invalidation, health checks, Alembic migrations, CI (one job on the
 hashing baseline, one running the full suite on the model provider).

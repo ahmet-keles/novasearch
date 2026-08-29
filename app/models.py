@@ -40,6 +40,33 @@ class CacheEpoch(Base):
     epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class EmbeddingSpaceRecord(Base):
+    """Single-row table owning the identity of the stored embedding space.
+
+    All-NULL identity means unclaimed: no chunks are indexed and the next
+    ingestion may adopt whichever provider is configured. Once claimed,
+    ingestion verifies (under the row lock) that its provider produces the
+    same space, and startup refuses a provider whose space differs — equal
+    dimensions alone never make vectors from two providers comparable.
+    The CHECKs pin the table to one row and keep the identity columns
+    NULL or set together.
+    """
+
+    __tablename__ = "embedding_space"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="embedding_space_single_row"),
+        CheckConstraint(
+            "(provider IS NULL) = (dimension IS NULL)",
+            name="embedding_space_claim_consistent",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dimension: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class Document(Base):
     """An ingested document, kept verbatim; search runs over its chunks."""
 
