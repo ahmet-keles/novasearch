@@ -1,0 +1,47 @@
+{
+  "description": "Paraphrase retrieval fixtures. Each query describes its expected document in different words, sharing no meaningful vocabulary with it — a real semantic model should retrieve the target, while the lexical hashing baseline has nothing to match on.",
+  "corpus": [
+    {
+      "title": "Refund policy",
+      "content": "Customers may return purchased goods within thirty days and receive a full reimbursement to the original payment method. Items must be unused and in their original packaging."
+    },
+    {
+      "title": "Password recovery",
+      "content": "If credentials are forgotten, request a reset link by email. The link expires after one hour and lets you choose new sign-in secrets for the account."
+    },
+    {
+      "title": "Shipping and delivery",
+      "content": "Purchases leave the warehouse within two business days. Delivery estimates appear at checkout, and tracking numbers are sent by email once the parcel ships."
+    },
+    {
+      "title": "Database backups",
+      "content": "Snapshots of production data are taken nightly and retained for ninety days in offsite storage. Restores are rehearsed quarterly."
+    },
+    {
+      "title": "Tomato soup recipe",
+      "content": "Simmer ripe tomatoes with basil, garlic, and olive oil. Blend until smooth and season the soup with salt and pepper before serving."
+    },
+    {
+      "title": "Astronomy club notes",
+      "content": "The club meets on clear evenings to point telescopes at nebulae and planets. New members learn to align the mount and pick eyepieces."
+    }
+  ],
+  "queries": [
+    {
+      "query": "how do I get my money back for something I bought",
+      "expected_title": "Refund policy"
+    },
+    {
+      "query": "I forgot my password and cannot log into my account",
+      "expected_title": "Password recovery"
+    },
+    {
+      "query": "when will my package get to me",
+      "expected_title": "Shipping and delivery"
+    },
+    {
+      "query": "how often do we make copies of our files and where are they kept",
+      "expected_title": "Database backups"
+    }
+  ]
+}
