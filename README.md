@@ -30,7 +30,7 @@ in sync.
               │ documents   │   └───────────┘
               │ chunks      │
               │  ├ tsvector ── GIN index (keyword)
-              │  └ vector(256) ── HNSW index (semantic)
+              │  └ vector(384) ── HNSW index (semantic)
               └─────────────┘
 ```
 
