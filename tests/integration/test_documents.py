@@ -35,7 +35,7 @@ def test_ingestion_persists_document_chunks_and_embeddings(client: TestClient) -
 
     assert chunk_count == body["chunk_count"]
     assert tsv_count == chunk_count, "generated tsvector must be populated for every chunk"
-    assert embedding_dim == 256
+    assert embedding_dim == 384
 
 
 def test_document_can_be_read_back(client: TestClient) -> None:

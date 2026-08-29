@@ -6,9 +6,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Runtime configuration, read from NOVA_-prefixed environment variables.
 
-    embedding_dim must match the vector dimension fixed in the database
-    migrations (alembic/versions): changing one without the other makes
-    inserts fail at the database, which is the safe direction.
+    embedding_dim must match the vector dimension fixed by the latest
+    database migration (alembic/versions): mismatches are caught at
+    startup by the schema validation, and by the database itself at
+    insert time — both safe directions.
     """
 
     model_config = SettingsConfigDict(env_prefix="NOVA_", env_file=".env", extra="ignore")
@@ -16,7 +17,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://nova:nova@localhost:5442/novasearch"
     redis_url: str = "redis://localhost:6389/0"
 
-    embedding_dim: int = 256
+    embedding_dim: int = 384
 
     chunk_max_words: int = 200
     chunk_overlap_words: int = 40
