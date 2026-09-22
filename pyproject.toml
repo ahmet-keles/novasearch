@@ -21,6 +21,9 @@ dev = [
     "httpx>=0.27",
     "ruff>=0.5",
 ]
+model = [
+    "fastembed>=0.4",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -42,4 +45,5 @@ ignore = ["B008"]
 testpaths = ["tests"]
 markers = [
     "integration: requires PostgreSQL and Redis (start them with `docker compose up -d`)",
+    "model: requires the model embedding provider (`pip install -e \".[model]\"` and a one-time model download)",
 ]

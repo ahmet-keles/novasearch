@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.cache import bump_epoch
 from app.chunking import chunk_text
 from app.config import get_settings
+from app.embedding_space import claim_embedding_space
 from app.embeddings import EmbeddingProvider
 from app.models import Chunk, Document
 from app.text import tokenize
@@ -42,6 +43,12 @@ def ingest_document(
         raise ValueError("content contains no indexable tokens")
 
     embeddings = provider.embed(chunks)
+
+    # Claimed under the row lock, in this same transaction: the chunks
+    # below can only ever commit into an index whose stored embedding
+    # space equals this provider's, so two providers can never mix — not
+    # even across replicas. Raises EmbeddingSpaceMismatch otherwise.
+    claim_embedding_space(session, provider.space)
 
     document = Document(title=title, content=content, doc_metadata=metadata)
     document.chunks = [

@@ -31,6 +31,14 @@ def redis_client() -> redis.Redis:
 def client(migrated_database: None, redis_client: redis.Redis) -> TestClient:
     with get_engine().begin() as connection:
         connection.execute(text("TRUNCATE documents CASCADE"))
+        # Cleared index -> unclaimed embedding space, same invariant the
+        # migrations keep: each test adopts its provider's space afresh.
+        connection.execute(
+            text(
+                "UPDATE embedding_space"
+                " SET provider = NULL, model_name = NULL, dimension = NULL"
+            )
+        )
     redis_client.flushdb()
 
     return TestClient(app)
