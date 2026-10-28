@@ -57,7 +57,8 @@ rather than pretending they are searchable.
   merged with **Reciprocal Rank Fusion**: a chunk's score is
   `Σ 1 / (60 + rank)` across the rankings that contain it. RRF operates on
   ranks, not raw scores, so cosine similarity and `ts_rank` never need to
-  be calibrated against each other.
+  be calibrated against each other. An optional cross-encoder can rescore
+  and reorder fused candidates before the requested result limit is applied.
 
 **Embeddings** are behind a small `EmbeddingProvider` interface with two
 implementations, selected by `NOVA_EMBEDDING_PROVIDER`:
@@ -120,13 +121,14 @@ keyword / semantic / hybrid search,
 paraphrase-retrieval evaluation fixtures, Redis response caching with
 write invalidation, health checks, process-local `/stats` metrics for rolling
 request-latency p95, search-cache hit rate, and embedding call/time totals,
-Alembic migrations, CI (one job on the hashing baseline, one running the
-full suite on the model provider).
+optional hybrid cross-encoder reranking, Alembic migrations, CI (one job on
+the hashing baseline, one running the full suite on model embeddings and
+reranking).
 
 Not implemented (see roadmap — the API will not pretend otherwise): answer
-generation / RAG, reranking, embedding versioning / online re-indexing,
-authentication, document updates and deletion, pagination, distributed
-metrics aggregation, and tracing.
+generation / RAG, embedding versioning / online re-indexing, authentication,
+document updates and deletion, pagination, distributed metrics aggregation,
+and tracing.
 
 ## Local setup
 
@@ -149,6 +151,20 @@ provider (the model, ~90 MB, downloads once on first use):
 pip install -e ".[dev,model]"
 NOVA_EMBEDDING_PROVIDER=model uvicorn app.main:app --reload
 ```
+
+Cross-encoder reranking is separately optional and applies to hybrid search
+after RRF. Install the `[rerank]` extra and opt in with the environment flag;
+the cross-encoder model downloads on first use:
+
+```bash
+pip install -e ".[dev,rerank]"
+NOVA_RERANK_ENABLED=true uvicorn app.main:app --reload
+```
+
+`NOVA_RERANK_MODEL` selects the FastEmbed cross-encoder (default
+`Xenova/ms-marco-MiniLM-L-6-v2`). The reranker scores the fused candidate
+pool and returns its scores in the API's `score` field. Search-cache keys
+include the enabled reranker model so differently ranked results cannot collide.
 
 Configuration comes from `NOVA_`-prefixed environment variables (or a
 `.env` file — see `.env.example`); the defaults match the compose ports.
@@ -196,8 +212,8 @@ Interactive API docs: `localhost:8000/docs`.
 ## Testing
 
 ```bash
-pytest -m "not integration"   # unit tests: chunking, embeddings, rank fusion — no services needed
-pytest                        # full suite; integration tests need `docker compose up -d --wait`
+pytest -m "not integration"   # unit tests: chunking, embeddings, fusion, and reranking
+pytest                        # full suite; integration tests need Docker services
 ruff check .
 ```
 
@@ -206,6 +222,10 @@ retrieval quality; they skip unless the `[model]` extra is installed and
 the model is available (CI's *model embeddings* job makes them mandatory
 and additionally runs the entire integration suite with
 `NOVA_EMBEDDING_PROVIDER=model`).
+The cross-encoder evaluation compares top-1 and recall@3 before and after
+reranking on the same paraphrase fixtures. It skips unless the `[rerank]`
+extra and model are available; CI makes this evaluation mandatory in the
+model job.
 
 Integration tests run against real PostgreSQL and Redis: they apply the
 Alembic migrations, ingest documents over the HTTP API, and assert
@@ -219,8 +239,8 @@ push and pull request.
 1. **Embedding lifecycle** — embedding versioning and online re-indexing,
    so the embedding space can change without a destructive migration;
    hosted embedding APIs as further providers.
-2. **Retrieval quality** — configurable fusion weights, a broader relevance
-   evaluation corpus, optional cross-encoder reranking.
+2. **Retrieval quality** — configurable fusion weights and a broader
+   relevance evaluation corpus.
 3. **Document lifecycle** — update and delete with index and cache
    consistency, batch ingestion, pagination.
 4. **RAG layer** — grounded answer generation over retrieved chunks

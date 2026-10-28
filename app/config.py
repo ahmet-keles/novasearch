@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # How many candidates each retriever contributes before hybrid fusion.
     search_candidate_pool: int = 50
 
+    # Optional second-stage ranking for the hybrid result candidates.
+    rerank_enabled: bool = False
+    rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+
     search_cache_ttl_seconds: int = 30
 
 

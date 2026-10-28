@@ -102,6 +102,7 @@ jobs:
       NOVA_EMBEDDING_PROVIDER: model
       NOVA_EMBEDDING_CACHE_DIR: /home/runner/.cache/novasearch-models
       NOVA_MODEL_TESTS_REQUIRED: "1"
+      NOVA_RERANK_TESTS_REQUIRED: "1"
 
     steps:
       - name: Check out repository
@@ -120,7 +121,7 @@ jobs:
           key: embedding-model-${{ hashFiles('pyproject.toml') }}-all-MiniLM-L6-v2
 
       - name: Install dependencies
-        run: pip install -e ".[dev,model]"
+        run: pip install -e ".[dev,model,rerank]"
 
       - name: Run the full suite on the model provider
         run: pytest -q
