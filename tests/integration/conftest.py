@@ -15,6 +15,7 @@ from alembic import command
 from app.config import get_settings
 from app.db import get_engine
 from app.main import app
+from app.metrics import metrics
 
 
 @pytest.fixture(scope="session")
@@ -29,6 +30,7 @@ def redis_client() -> redis.Redis:
 
 @pytest.fixture
 def client(migrated_database: None, redis_client: redis.Redis) -> TestClient:
+    metrics.reset()
     with get_engine().begin() as connection:
         connection.execute(text("TRUNCATE documents CASCADE"))
         # Cleared index -> unclaimed embedding space, same invariant the
