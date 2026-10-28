@@ -54,6 +54,23 @@ def test_search_responses_are_cached_in_redis(
     )
 
 
+def test_stats_reports_latency_cache_and_embedding_metrics(client: TestClient) -> None:
+    client.post("/documents", json=DOC)
+    client.get("/search", params={"q": "kafka partitions"})
+    client.get("/search", params={"q": "kafka partitions"})
+
+    response = client.get("/stats")
+
+    assert response.status_code == 200
+    snapshot = response.json()
+    assert snapshot["request_latency"]["sample_count"] == 3
+    assert snapshot["request_latency"]["p95_ms"] >= 0
+    assert snapshot["search_cache"] == {"hits": 1, "misses": 1, "hit_rate": 0.5}
+    assert snapshot["embeddings"]["calls"] >= 2  # chunks plus search query
+    assert snapshot["embeddings"]["texts"] >= 2
+    assert snapshot["embeddings"]["total_time_ms"] >= 0
+
+
 def test_late_cache_write_after_epoch_bump_lands_in_retired_epoch(
     client: TestClient,
 ) -> None:

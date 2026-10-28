@@ -5,6 +5,7 @@ from app.chunking import chunk_text
 from app.config import get_settings
 from app.embedding_space import claim_embedding_space
 from app.embeddings import EmbeddingProvider
+from app.metrics import embed_with_metrics
 from app.models import Chunk, Document
 from app.text import tokenize
 
@@ -42,7 +43,7 @@ def ingest_document(
     if not chunks:
         raise ValueError("content contains no indexable tokens")
 
-    embeddings = provider.embed(chunks)
+    embeddings = embed_with_metrics(provider, chunks)
 
     # Claimed under the row lock, in this same transaction: the chunks
     # below can only ever commit into an index whose stored embedding

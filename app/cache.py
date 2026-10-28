@@ -25,6 +25,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.metrics import metrics
 from app.models import CacheEpoch
 
 logger = logging.getLogger(__name__)
@@ -61,9 +62,12 @@ class SearchCache:
             raw = self._client.get(self._key(epoch=epoch, mode=mode, query=query, limit=limit))
         except redis.RedisError:
             logger.warning("Redis unavailable; serving search uncached", exc_info=True)
+            metrics.record_cache_result(hit=False)
             return None
 
-        return json.loads(raw) if raw is not None else None
+        hit = raw is not None
+        metrics.record_cache_result(hit=hit)
+        return json.loads(raw) if hit else None
 
     def put(self, *, epoch: int, mode: str, query: str, limit: int, payload: dict) -> None:
         try:

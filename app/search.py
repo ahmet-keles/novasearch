@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.embeddings import EmbeddingProvider
+from app.metrics import embed_with_metrics
 from app.models import Chunk, Document
 
 
@@ -68,7 +69,7 @@ def semantic_search(
     limit: int,
 ) -> list[SearchHit]:
     """Nearest chunks by cosine distance; score is cosine similarity."""
-    [query_embedding] = provider.embed([query])
+    [query_embedding] = embed_with_metrics(provider, [query])
 
     # A zero vector has no direction, so cosine distance against it is
     # undefined. The API rejects tokenless queries before reaching here;

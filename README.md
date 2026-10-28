@@ -118,12 +118,15 @@ dimension validation, and a persisted embedding-space identity guard
 (mixing embeddings from two providers is structurally impossible),
 keyword / semantic / hybrid search,
 paraphrase-retrieval evaluation fixtures, Redis response caching with
-write invalidation, health checks, Alembic migrations, CI (one job on the
-hashing baseline, one running the full suite on the model provider).
+write invalidation, health checks, process-local `/stats` metrics for rolling
+request-latency p95, search-cache hit rate, and embedding call/time totals,
+Alembic migrations, CI (one job on the hashing baseline, one running the
+full suite on the model provider).
 
 Not implemented (see roadmap — the API will not pretend otherwise): answer
 generation / RAG, reranking, embedding versioning / online re-indexing,
-authentication, document updates and deletion, pagination.
+authentication, document updates and deletion, pagination, distributed
+metrics aggregation, and tracing.
 
 ## Local setup
 
@@ -176,7 +179,17 @@ curl -s localhost:8000/documents/<id>
 # Health (503 + "degraded" if PostgreSQL or Redis is down)
 curl -s localhost:8000/health
 # → {"status": "ok", "database": "up", "redis": "up"}
+
+# Process-local operational metrics
+curl -s localhost:8000/stats
+# → request latency p95, search-cache hit rate, and embedding calls/time
 ```
+
+`/stats` reports a rolling p95 over the latest 1,000 completed HTTP requests
+(excluding `/stats` polling itself), search-cache hits and misses since process
+start, and embedding call/text counts plus cumulative embedding time. These
+values are in-memory and reset on restart; multiple API workers do not share
+or aggregate their measurements.
 
 Interactive API docs: `localhost:8000/docs`.
 
@@ -212,5 +225,5 @@ push and pull request.
    consistency, batch ingestion, pagination.
 4. **RAG layer** — grounded answer generation over retrieved chunks
    (explicitly not part of this milestone).
-5. **Operations** — metrics and tracing, request auth, rate limiting,
+5. **Operations** — tracing, request auth, rate limiting,
    container image for the API itself.

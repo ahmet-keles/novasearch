@@ -1,11 +1,13 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from time import perf_counter
 
 from fastapi import FastAPI
 
 from app.db import get_sessionmaker, validate_embedding_dimension
 from app.embedding_space import validate_embedding_space
 from app.embeddings import get_embedding_provider
+from app.metrics import metrics
 
 
 @asynccontextmanager
@@ -30,11 +32,22 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    from app.routes import documents, health, search
+    from app.routes import documents, health, search, stats
+
+    @app.middleware("http")
+    async def collect_request_latency(request, call_next):
+        started = perf_counter()
+        try:
+            return await call_next(request)
+        finally:
+            # Exclude this endpoint so polling stats does not skew its own p95.
+            if request.url.path != "/stats":
+                metrics.observe_request((perf_counter() - started) * 1000)
 
     app.include_router(health.router)
     app.include_router(documents.router)
     app.include_router(search.router)
+    app.include_router(stats.router)
 
     return app
 
