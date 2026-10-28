@@ -26,6 +26,7 @@ from app.embeddings import (
     SentenceTransformerEmbeddingProvider,
 )
 from app.ingestion import ingest_document
+from app.reranking import CrossEncoder, FastEmbedCrossEncoder, rerank_hits
 from app.search import semantic_search
 
 pytestmark = pytest.mark.integration
@@ -35,6 +36,7 @@ FIXTURES = json.loads(
 )
 
 MODEL_REQUIRED = os.environ.get("NOVA_MODEL_TESTS_REQUIRED") == "1"
+RERANK_REQUIRED = os.environ.get("NOVA_RERANK_TESTS_REQUIRED") == "1"
 
 
 @pytest.fixture(scope="session")
@@ -58,8 +60,21 @@ def model_provider() -> SentenceTransformerEmbeddingProvider:
         pytest.skip(f"embedding model unavailable: {error}")
 
 
-def evaluate(provider: EmbeddingProvider) -> tuple[float, float]:
-    """Ingest the fixture corpus with `provider`; return (top1, recall@3)."""
+@pytest.fixture(scope="session")
+def cross_encoder() -> FastEmbedCrossEncoder:
+    settings = get_settings()
+    try:
+        return FastEmbedCrossEncoder(settings.rerank_model)
+    except Exception as error:
+        if RERANK_REQUIRED:
+            raise
+        pytest.skip(f"cross-encoder unavailable: {error}")
+
+
+def evaluate(
+    provider: EmbeddingProvider, reranker: CrossEncoder | None = None
+) -> tuple[float, float]:
+    """Ingest fixtures and return semantic or reranked (top1, recall@3)."""
     with get_sessionmaker()() as session:
         session.execute(text("TRUNCATE documents CASCADE"))
         # Unclaim the embedding space (cleared-index invariant), so each
@@ -86,7 +101,10 @@ def evaluate(provider: EmbeddingProvider) -> tuple[float, float]:
 
     with get_sessionmaker()() as session:
         for case in FIXTURES["queries"]:
-            hits = semantic_search(session, provider, case["query"], limit=3)
+            hits = semantic_search(session, provider, case["query"], limit=10)
+            if reranker is not None:
+                hits = rerank_hits(case["query"], hits, reranker)
+            hits = hits[:3]
             titles = [hit.document_title for hit in hits]
 
             if titles and titles[0] == case["expected_title"]:
@@ -106,6 +124,26 @@ def test_model_provider_retrieves_paraphrased_answers(
 
     assert recall3 == 1.0, "every paraphrase target must appear in the top 3"
     assert top1 >= 0.75, f"model top-1 accuracy {top1} below threshold"
+
+
+@pytest.mark.model
+def test_cross_encoder_effect_on_paraphrase_quality(
+    migrated_database: None,
+    model_provider: SentenceTransformerEmbeddingProvider,
+    cross_encoder: FastEmbedCrossEncoder,
+    record_property,
+) -> None:
+    semantic_top1, semantic_recall3 = evaluate(model_provider)
+    reranked_top1, reranked_recall3 = evaluate(model_provider, cross_encoder)
+
+    record_property("semantic_top1", semantic_top1)
+    record_property("semantic_recall_at_3", semantic_recall3)
+    record_property("reranked_top1", reranked_top1)
+    record_property("reranked_recall_at_3", reranked_recall3)
+    assert reranked_recall3 >= semantic_recall3, (
+        f"reranking reduced recall@3 from {semantic_recall3} to {reranked_recall3}"
+    )
+    assert reranked_top1 >= 0.5, f"reranked top-1 accuracy {reranked_top1} below threshold"
 
 
 def test_paraphrase_queries_defeat_the_hashing_baseline(

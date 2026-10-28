@@ -20,6 +20,7 @@ from app.config import get_settings
 from app.embeddings import EmbeddingProvider
 from app.metrics import embed_with_metrics
 from app.models import Chunk, Document
+from app.reranking import get_cross_encoder_reranker, rerank_hits
 
 
 class SearchMode(StrEnum):
@@ -113,8 +114,9 @@ def hybrid_search(
     query: str,
     limit: int,
 ) -> list[SearchHit]:
-    """RRF over a candidate pool from each retriever; score is the RRF score."""
-    pool = max(get_settings().search_candidate_pool, limit)
+    """Fuse a candidate pool with RRF, then optionally cross-encoder rerank it."""
+    settings = get_settings()
+    pool = max(settings.search_candidate_pool, limit)
 
     semantic_hits = semantic_search(session, provider, query, pool)
     keyword_hits = keyword_search(session, query, pool)
@@ -129,9 +131,9 @@ def hybrid_search(
     hits_by_id = {hit.chunk_id: hit for hit in semantic_hits}
     hits_by_id.update({hit.chunk_id: hit for hit in keyword_hits})
 
-    top = sorted(fused.items(), key=lambda item: (-item[1], str(item[0])))[:limit]
+    top = sorted(fused.items(), key=lambda item: (-item[1], str(item[0])))[:pool]
 
-    return [
+    ranked = [
         SearchHit(
             chunk_id=hits_by_id[chunk_id].chunk_id,
             document_id=hits_by_id[chunk_id].document_id,
@@ -142,6 +144,11 @@ def hybrid_search(
         )
         for chunk_id, score in top
     ]
+
+    if settings.rerank_enabled:
+        ranked = rerank_hits(query, ranked, get_cross_encoder_reranker())
+
+    return ranked[:limit]
 
 
 def _hit(chunk: Chunk, title: str, *, score: float) -> SearchHit:

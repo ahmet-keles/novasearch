@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.cache import SearchCache, current_epoch, get_search_cache
+from app.config import get_settings
 from app.db import get_session
 from app.embeddings import EmbeddingProvider, get_embedding_provider
 from app.schemas import SearchResponse, SearchResult
@@ -9,6 +10,14 @@ from app.search import SearchMode, hybrid_search, keyword_search, semantic_searc
 from app.text import tokenize
 
 router = APIRouter(prefix="/search", tags=["search"])
+
+
+def search_cache_mode(
+    mode: SearchMode, *, rerank_enabled: bool, rerank_model: str
+) -> str:
+    if mode is SearchMode.hybrid and rerank_enabled:
+        return f"{mode.value}:rerank:{rerank_model}"
+    return mode.value
 
 
 @router.get("", response_model=SearchResponse)
@@ -34,7 +43,14 @@ def search(
     # already-retired epoch — never cache stale results under the new one.
     epoch = current_epoch(session)
 
-    cached = cache.get(epoch=epoch, mode=mode.value, query=q, limit=limit)
+    settings = get_settings()
+    cache_mode = search_cache_mode(
+        mode,
+        rerank_enabled=settings.rerank_enabled,
+        rerank_model=settings.rerank_model,
+    )
+
+    cached = cache.get(epoch=epoch, mode=cache_mode, query=q, limit=limit)
     if cached is not None:
         return SearchResponse(**cached)
 
@@ -53,7 +69,7 @@ def search(
 
     cache.put(
         epoch=epoch,
-        mode=mode.value,
+        mode=cache_mode,
         query=q,
         limit=limit,
         payload=response.model_dump(mode="json"),

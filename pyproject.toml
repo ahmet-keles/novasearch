@@ -24,6 +24,9 @@ dev = [
 model = [
     "fastembed>=0.4",
 ]
+rerank = [
+    "fastembed>=0.6.1",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
